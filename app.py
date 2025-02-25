@@ -1,5 +1,9 @@
 from flask import Flask,render_template,request,url_for,flash,redirect,session
 from blockchain import Blockchain_for_user,Blockchain_for_transaction
+from authlib.integrations.flask_client import OAuth
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from werkzeug.security import generate_password_hash,check_password_hash
+import config
 import pandas as pd
 import os
 from hashlib import sha256
@@ -26,14 +30,58 @@ def allowed_file(filename):
 blockchain=Blockchain_for_user()
 transaction_blockchain=Blockchain_for_transaction()
 
+
+
+oauth = OAuth(app)
+google = oauth.register(
+    name="google",
+    client_id=config.GOOGLE_CLIENT_ID,
+    client_secret=config.GOOGLE_CLIENT_SECRET,
+    server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",  
+    client_kwargs={"scope": "openid email profile"},
+)
+
+
+login_manager = LoginManager(app)
+login_manager.login_view = '/'  # Redirect if user is not logged in
+
+# User Model for Flask-Login
+class User(UserMixin):
+    def __init__(self, id, username):
+        self.id = id
+        self.username = username
+        self.role = "user"
+
+class Charity(UserMixin):
+    def __init__(self, id, name):
+        self.id = id
+        self.username = name  
+        self.role = "charity"
+
+@login_manager.user_loader
+def load_user(user_id):
+    cur.execute("SELECT Id, Username FROM userinformation WHERE id = %s", (user_id,))
+    user = cur.fetchone()
+    if user:
+        return User(user[0], user[1])
+    
+    cur.execute("SELECT Slno, Charityname FROM charityinformation WHERE id = %s", (user_id,))
+    charity = cur.fetchone()
+    if charity:
+        return Charity(charity[0], charity[1])
+    return None
+
 @app.route('/')
 def index():
     return render_template('index.html')
 
 @app.route('/charityhome/<chaname>',methods=['POST','GET'])
+@login_required
 def charityhome(chaname):
     return render_template('charityhome.html',chaname=chaname)
 
+
+#charity login
 @app.route('/charitylog',methods=['POST','GET'])
 def charitylog():
     if request.method =='POST':
@@ -47,9 +95,14 @@ def charitylog():
             flash("details are not valid......!","success")
             return render_template('charitylog.html')
         else:
+            #password checking more security
+            '''password1=data[0][3]
+            if check_password_hash(password1,request.form['charity_password']):'''
+            login_user(Charity(data[0][0], data[0][1]))
             return render_template('charityhome.html',chaname=data[0][1])
     return render_template('charitylog.html')
 
+#charity registration
 @app.route('/charityregistration',methods=['POST','GET'])
 def charityregistration():
     if request.method=='POST':
@@ -80,10 +133,14 @@ def charityregistration():
                     previous_hash=data1.present_hash
                     #print(previous_hash)
                     present_hash=present.hash
+                #password checking more security
+                #charity_password=generate_password_hash(charity_password,method='sha256')
                 sql="insert into charityinformation(Charityname,Charityemail,Charitypassword,Charityaddress,Charitycontact,status,previous_hash,present_hash)values(%s,%s,%s,%s,%s,%s,%s,%s)"
                 val=(Charity_name,Charity_email,charity_password,charity_address,charity_contact,status,previous_hash,present_hash)
                 cur.execute(sql,val)
                 db.commit()
+
+                Charity_name=Charity_name.replace(" ","")
 
                 sql="""CREATE TABLE `%s_transactiondetails` (
                     `Id` int NOT NULL AUTO_INCREMENT,
@@ -190,19 +247,22 @@ def charityregistration():
                 return redirect('charityregistration')
     return render_template('charityregistration.html')
 
-
+# charity profile
 @app.route('/charity_profile/<string:chaname>',methods=['POST','GET'])
+@login_required
 def charity_profile(chaname):
     sql="select *from charityinformation where Charityname='%s'"%(chaname)
     data=pd.read_sql_query(sql,db)
     return render_template('charity_profile.html',cols=data.columns.values,rows=data.values.tolist(),chaname=chaname)
 
-
+# charity post upload
 @app.route('/charity_post_upload/<string:chaname>',methods=['POST','GET'])
+@login_required
 def charity_post_upload(chaname):
     return render_template('charity_post_upload.html',chaname=chaname)
 
 @app.route('/post_upload/<string:chaname>',methods=['POST','GET'])
+@login_required
 def post_upload(chaname):
     if request.method == 'POST':
         charity_name = request.form.get('charity_name')
@@ -233,6 +293,7 @@ def post_upload(chaname):
     return render_template('charity_post_upload.html', chaname=chaname)
 
 @app.route('/charity_event/<string:chaname>',methods=['POST','GET'])
+@login_required
 def charity_event(chaname):
     sql="select *from eventdetails where Charityname='%s'"%(chaname)
     data=pd.read_sql_query(sql,db)
@@ -247,13 +308,17 @@ def charity_event(chaname):
     return render_template('charity_event.html',cols=data.columns.values,rows=rows,chaname=chaname)
 
 @app.route('/charity_member/<string:chaname>',methods=['POST','GET'])
+@login_required
 def charity_member(chaname):
-    table_name1=str(chaname)+"_members"
+    table_name1=str(chaname.replace(" ",""))+"_members"
+    print(table_name1)
+    print(chaname)
     sql=f"select * from {table_name1}"
     data=pd.read_sql_query(sql,db)
     return render_template('charity_member.html',cols=data.columns.values,rows=data.values.tolist(),chaname=chaname)
 
 @app.route('/memberadd/<string:chaname>',methods=['POST','GET'])
+@login_required
 def memberadd(chaname):
     if request.method == 'POST':
         charity_name = request.form.get('charity_name')
@@ -266,7 +331,8 @@ def memberadd(chaname):
         present=blockchain.userchain[len(blockchain.userchain)-1]
         previous_hash="0"
         present_hash=present.hash
-        table_name1=chaname+"_members"
+
+        table_name1=chaname.replace(" ","")+"_members"
         sql=f"select * from {table_name1}"
         data1=pd.read_sql_query(sql,db)
         row,col=data1.shape
@@ -282,22 +348,26 @@ def memberadd(chaname):
     return render_template('charity_memberadd.html',chaname=chaname)
 
 @app.route('/charity_memberadd/<string:chaname>',methods=['POST','GET'])
+@login_required
 def charity_memberadd(chaname):
     return render_template('charity_memberadd.html',chaname=chaname)
 
 @app.route('/charity_withdraw/<string:chaname>',methods=['POST','GET'])
+@login_required
 def charity_withdraw(chaname):
     return render_template('charity_withdraw.html',chaname=chaname)
 
 @app.route('/withdraw_list/<string:chaname>',methods=['POST','GET'])
+@login_required
 def withdraw_list(chaname):
-    table_name1=chaname+"_withdraw"
+    table_name1=chaname.replace(" ","")+"_withdraw"
     print(table_name1)
     sql=f"select * from {table_name1}"
     data=pd.read_sql_query(sql,db)
     return render_template('withdraw_list.html',cols=data.columns.values,rows=data.values.tolist(),chaname=chaname)
 
 @app.route('/withdraw/<string:chaname>',methods=['POST','GET'])
+@login_required
 def withdraw(chaname):
     if request.method == 'POST':
         charity_name = request.form.get('charity_name')
@@ -305,7 +375,7 @@ def withdraw(chaname):
         event_description = request.form.get('event_description')
         ammount = int(request.form.get('ammount'))
         if(ammount>0):
-            table_name1=chaname+"_transactiondetails"
+            table_name1=chaname.replace(" ","")+"_transactiondetails"
             sql=f"SELECT SUM(amount)FROM {table_name1} WHERE status='completed'"
             data=pd.read_sql_query(sql,db)
             rows=data.values.tolist()
@@ -315,7 +385,7 @@ def withdraw(chaname):
             else:
                 amount1=0
             print(amount1)
-            table_name2=chaname+"_withdraw"
+            table_name2=chaname.replace(" ","")+"_withdraw"
             sql=f"SELECT SUM(amount)FROM {table_name2} "
             data=pd.read_sql_query(sql,db)
             rows=data.values.tolist()
@@ -358,21 +428,24 @@ def withdraw(chaname):
 
 
 @app.route('/viewdonations/<chaname>',methods=['POST','GET'])
+@login_required
 def viewdonations(chaname):
     sql="select Id,Charityemail,Charityaccountnumber,Userename,amount,status,previous_hash,present_hash from transactiondetails"
     data=pd.read_sql_query(sql,db)
     return render_template("viewdonations.html",cols=data.columns.values,rows=data.values.tolist(),chaname=chaname)
 
 @app.route('/itemrequest/<chaname>',methods=['POST','GET'])
+@login_required
 def itemrequest(chaname):
-    table_name=chaname+"_itemrequest"
+    table_name=chaname.replace(" ","")+"_itemrequest"
     sql=F"select *from {table_name}"
     data=pd.read_sql_query(sql,db)
     return render_template("itemrequest.html",cols=data.columns.values,rows=data.values.tolist(),chaname=chaname)
 
 @app.route('/itemassign/<string:chaname>/<int:v>',methods=['POST','GET'])
+@login_required
 def itemassign(chaname,v):
-    table_name=chaname+"_itemrequest"
+    table_name=chaname.replace(" ","")+"_itemrequest"
     sql=f"select Username,Useraddress,items,Usercontact,Useremail from {table_name} where Slno='%s'"%(v)
     data=pd.read_sql_query(sql,db)
     rows=data.values.tolist()
@@ -382,7 +455,7 @@ def itemassign(chaname,v):
     usacontact=rows[0][3]
     usaemail=rows[0][4]
 
-    table_name1=chaname+"_members"
+    table_name1=chaname.replace(" ","")+"_members"
     sql=f"select * from {table_name1} where Memberaddress='%s'"%(usaaddress)
     data=pd.read_sql_query(sql,db)
     rows=data.values.tolist()
@@ -398,13 +471,13 @@ def itemassign(chaname,v):
         present=blockchain.userchain[len(blockchain.userchain)-1]
 
         print(usaname)
-        table_name2=usaname+"_item"
+        table_name2=usaname.replace(" ","")+"_item"
         sql=f"insert into {table_name2} (Charityname,Charityemail,Membername,Memberemail,Memberaddress,Membercontact,items,status,present_hash)values(%s,%s,%s,%s,%s,%s,%s,%s,%s)"
         val=(chaname,session['charityemail'],Membername,Memberemail,Memberaddress,Membercontact,items,status,present.hash)
         cur.execute(sql,val)
         db.commit()
 
-        table_name3=chaname+"_item"
+        table_name3=chaname.replace(" ","")+"_item"
         sql=f"insert into {table_name3} (Charityname,Username,Useremail,Useraddress,usercontact,Membername,items,status,present_hash)values(%s,%s,%s,%s,%s,%s,%s,%s,%s)"
         val= (chaname,usaname,usaemail,usaaddress,usacontact,Membername,items,status,present.hash)
         cur.execute(sql,val)
@@ -424,9 +497,10 @@ def itemassign(chaname,v):
 
 
 @app.route("/charity_item/<string:chaname>")
+@login_required
 def charity_item(chaname):
 
-    table_name2=chaname+"_item"
+    table_name2=chaname.replace(" ","")+"_item"
     #sql="select Charityname,Charityemail,Charityaddress,Useremail from donation where Status='accept'"
     sql=f"select Slno,Charityname,Username,Useremail,Useraddress,usercontact,Membername,items,status from {table_name2}"
     data=pd.read_sql_query(sql,db)
@@ -434,9 +508,10 @@ def charity_item(chaname):
 
 
 @app.route("/itemstatus/<string:chaname>/<int:v>")
+@login_required
 def itemstatus(chaname,v):
 
-    table_name2=chaname+"_item"
+    table_name2=chaname.replace(" ","")+"_item"
     #sql="select Charityname,Charityemail,Charityaddress,Useremail from donation where Status='accept'"
     sql=f"select Username,items,present_hash status from {table_name2} where Slno='%s'"%(v)
     data=pd.read_sql_query(sql,db)
@@ -445,7 +520,7 @@ def itemstatus(chaname,v):
     item1=rows[0][1]
     hash1=rows[0][2]
 
-    table_name3=usaname+"_item"
+    table_name3=usaname.replace(" ","")+"_item"
     sql=f"select Slno,items,present_hash status from {table_name3} where present_hash='%s'"%(hash1)
     data=pd.read_sql_query(sql,db)
     rows=data.values.tolist()
@@ -470,16 +545,18 @@ def itemstatus(chaname,v):
 
 
 @app.route('/singledonations/<chaname>',methods=['POST','GET'])
+@login_required
 def singledonations(chaname):
-    table_name1=chaname+"_transactiondetails"
+    table_name1=chaname.replace(" ","")+"_transactiondetails"
     print(table_name1)
     sql=f"select Id,Charityemail,Charityaccountnumber,Userename,amount,status,previous_hash,present_hash from {table_name1}"
     data=pd.read_sql_query(sql,db)
     return render_template("singledonations.html",cols=data.columns.values,rows=data.values.tolist(),chaname=chaname)
 
 @app.route('/charity_total/<chaname>',methods=['POST','GET'])
+@login_required
 def charity_total(chaname):
-    table_name1=chaname+"_transactiondetails"
+    table_name1=chaname.replace(" ","")+"_transactiondetails"
     print(table_name1)
     sql=f"SELECT SUM(amount)FROM {table_name1} WHERE status='completed'"
     data=pd.read_sql_query(sql,db)
@@ -489,7 +566,7 @@ def charity_total(chaname):
         amount1=int(rows[0][0])
     else:
         amount1=0
-    table_name2=chaname+"_withdraw"
+    table_name2=chaname.replace(" ","")+"_withdraw"
     sql=f"SELECT SUM(amount)FROM {table_name2} "
     data=pd.read_sql_query(sql,db)
     rows=data.values.tolist()
@@ -522,31 +599,34 @@ def charity_total(chaname):
 
 
 @app.route('/donationrequest/<chaname>',methods=['POST','GET'])
+@login_required
 def donationrequest(chaname):
-    table_name=chaname+"_donation"
+    table_name=chaname.replace(" ","")+"_donation"
     sql=f"""select *from {table_name}""" #where Charityname='%s'"%(chaname)
     data=pd.read_sql_query(sql,db)
     return render_template("donationrequest.html",cols=data.columns.values,rows=data.values.tolist(),chaname=chaname)
 
 
 @app.route('/acceptrequest/<int:c>/<string:chaname>')
+@login_required
 def acceptrequest(c,chaname):
     return render_template('charitydetails.html',c=c,chaname=chaname)
 
 @app.route('/charitybanking/<int:c>/<string:chaname>',methods=["POST","GET"])
+@login_required
 def charitybanking(c,chaname):
     if request.method=="POST":
         bankaccount=request.form['accountnumber']
         ifsccode=request.form['accountIFSCcode']
         status="accept"
-        table_name1=chaname+"_donation"
+        table_name1=chaname.replace(" ","")+"_donation"
         sql=f"""select Username,Useremail from {table_name1} where Slno='%s'"""%(c)
         data=pd.read_sql_query(sql,db)
         rows=data.values.tolist()
         print(rows)
         username=rows[0][0]
         useremail=rows[0][1]
-        table_name2=username+"_bankdetails"
+        table_name2=username.replace(" ","")+"_bankdetails"
         blockchain.add_block_user(bankaccount,ifsccode)
         present=blockchain.userchain[len(blockchain.userchain)-1]
         previous_hash="0"
@@ -585,10 +665,12 @@ def charitybanking(c,chaname):
     return render_template("senddetails.html",chaname=chaname)
 
 @app.route("/charitylogout")
+@login_required
 def charitylogout():
+    logout_user()
     return redirect("/")
 
-#admin function
+#-----------------------------------admin function-----------------------------------------
 
 @app.route('/admin',methods=["POST","GET"])
 def admin():
@@ -653,7 +735,7 @@ def admin_charitybanking(c):
         useremail=rows[0][4]
         status="hacked"
 
-        table_name=chaname+"_donation"
+        table_name=chaname.replace(" ","")+"_donation"
 
         blockchain.add_block_user("admin","hacked")
         present=blockchain.userchain[len(blockchain.userchain)-1]
@@ -669,7 +751,7 @@ def admin_charitybanking(c):
         chanemail=rows[0][0]
         useremail=rows[0][1]'''
 
-        table_name1=usaname+"_bankdetails"
+        table_name1=usaname.replace(" ","")+"_bankdetails"
         blockchain.add_block_user(bankaccount,ifsccode)
         present=blockchain.userchain[len(blockchain.userchain)-1]
         sql=f"insert into {table_name1} (Charityemail,Charityaccountnumber,charityifsccode,username,useremail,status,previous_hash,present_hash)values(%s,%s,%s,%s,%s,%s,%s,%s)"
@@ -705,7 +787,11 @@ def adminlogout():
 
 
 
-#user function
+#----------------------------------user function-----------------------------------------------
+
+
+
+
 @app.route("/userreg",methods=["POST","GET"])
 def userreg():
     if request.method=="POST":
@@ -742,6 +828,7 @@ def userreg():
                 cur.execute(sql,val)
                 db.commit()
 
+                user_name=user_name.replace(" ","")
                 sql1="""CREATE TABLE `%s_bankdetails` (
                 `Id` int NOT NULL AUTO_INCREMENT,
                 `Charityemail` varchar(200) DEFAULT NULL,
@@ -809,18 +896,74 @@ def userlog():
         data=cur.fetchall()
         db.commit()
         if len(data)!= 0:
+            login_user(User(data[0][0], data[0][1]))
             return render_template('userhome.html',usaname=data[0][1])
         else:
             flash("Credentials are not valid.....!","success")
             return redirect('userlog')
     return render_template('userlog.html')
 
+@app.route('/googlelog1',methods=["GET","POST"])
+def googlelog1():
+    return google.authorize_redirect(
+        url_for("existlogin", _external=True),
+        prompt="consent",
+        access_type="offline" 
+    )
+
+@app.route("/existlogin")
+def existlogin():
+    token = google.authorize_access_token()
+    user_info = google.get("https://www.googleapis.com/oauth2/v3/userinfo").json()
+    print(user_info)
+    usaname=user_info['name']
+    usaemail=user_info['email']
+    sql="select *from userinformation where useremail='%s'"%(usaemail)
+    cur.execute(sql)
+    data=cur.fetchall()
+    #usaname=data[0][0]
+    db.commit()
+    if len(data)==0:
+        return render_template('userreg1.html',user_info=user_info)
+    #return f"Hello, {user_info['name']}! Your email is {user_info['email']}"
+    else:
+        session['user_email']=usaemail
+        sql="select Id,Username from userinformation where useremail='%s'"%(usaemail)
+        cur.execute(sql)
+        data=cur.fetchall()
+        usaname=data[0][1]
+        db.commit()
+        login_user(User(data[0][0], data[0][1]))
+        return render_template('userhome.html',usaname=usaname)
+
+@app.route('/googlelog',methods=["GET","POST"])
+def googlelog():
+    return google.authorize_redirect(
+        url_for("callback", _external=True),
+        prompt="consent",
+        access_type="offline" 
+    )
+
+@app.route("/callback")
+def callback():
+    token = google.authorize_access_token()
+    #user_info = google.get("userinfo").json()
+
+    '''session["user"] = user_info
+    return redirect(url_for("home"))'''
+    user_info = google.get("https://www.googleapis.com/oauth2/v3/userinfo").json()
+    print(user_info)
+    #return f"Hello, {user_info['name']}! Your email is {user_info['email']}"
+    return render_template('userreg1.html',user_info=user_info)
+
 @app.route('/userhome/<usaname>',methods=['POST','GET'])
+@login_required
 def userhome(usaname):
     return render_template('userhome.html',usaname=usaname)
 
 
 @app.route('/userprofile/<usaname>',methods=['POST','GET'])
+@login_required
 def userprofile(usaname):
     sql="select * from userinformation where Username='%s'"%(usaname)
     data=pd.read_sql_query(sql,db)
@@ -828,16 +971,19 @@ def userprofile(usaname):
     return render_template('user_profile.html',cols=data.columns.values,rows=data.values.tolist(),usaname=usaname)
 
 @app.route('/userhome1',methods=['POST','GET'])
+@login_required
 def userhome1():
     return render_template('userhome1.html')
 
 @app.route('/viewcharities/<string:usaname>',methods=['POST','GET'])
+@login_required
 def viewcharities(usaname):
     sql="select *from charityinformation"
     data=pd.read_sql_query(sql,db)
     return render_template('viewcharities.html',cols=data.columns.values,rows=data.values.tolist(),usaname=usaname)
 
 @app.route('/about/<string:usaname>/<int:v>',methods=['POST','GET'])
+@login_required
 def about(usaname,v):
     sql="select * from charityinformation where Slno='%s'"%(v)
     data=pd.read_sql_query(sql,db)
@@ -857,6 +1003,7 @@ def about(usaname,v):
     return render_template('about.html',cols=data.columns.values,rows=data.values.tolist(),usaname=usaname,v=v)
 
 @app.route('/singleevent/<string:usaname>/<int:v>/<int:c>',methods=['POST','GET'])
+@login_required
 def singleevent(usaname,v,c):
     '''sql="select * from charityinformation where Slno='%s'"%(v)
     data=pd.read_sql_query(sql,db)
@@ -876,6 +1023,7 @@ def singleevent(usaname,v,c):
     return render_template('single_event.html',cols=data.columns.values,rows=data.values.tolist(),usaname=usaname,v=v,c=c)
 
 @app.route('/donateitems/<string:usaname>/<int:v>/<int:c>',methods=['POST','GET'])
+@login_required
 def donateitems(usaname,v,c):
     print(v)
     if request.method=="POST":
@@ -901,7 +1049,7 @@ def donateitems(usaname,v,c):
         previous_hash="0"
         present_hash=present.hash
         #table_name=charity_name+"_itemrequest"
-        sql="select * from %s_itemrequest"%(charity_name)
+        sql="select * from %s_itemrequest"%(charity_name.replace(" ",""))
         data1=pd.read_sql_query(sql,db)
         row,col=data1.shape
         print(present_hash)
@@ -911,7 +1059,7 @@ def donateitems(usaname,v,c):
             previous_hash=data1.present_hash
             #print(previous_hash)
             present_hash=present.hash
-        table_name=charity_name+"_itemrequest"
+        table_name=charity_name.replace(" ","")+"_itemrequest"
         print(table_name)
         sql=f"""insert into {table_name} (Charityname,Username,Useremail,Useraddress,Usercontact,items,status,previous_hash,present_hash)values(%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
         val=(charity_name,Username,Useremail,Useraddress,Usercontact,items,status,previous_hash,present_hash)
@@ -926,6 +1074,7 @@ def donateitems(usaname,v,c):
 
 
 @app.route('/donate/<string:usaname>/<int:v>',methods=['POST','GET'])
+@login_required
 def donate(usaname,v):
     print(v)
     #print(session['user_email'])
@@ -949,7 +1098,7 @@ def donate(usaname,v):
     previous_hash="0"
     present_hash=present.hash
     hash=present.hash
-    sql="select * from %s_donation"%(charity_name)
+    sql="select * from %s_donation"%(charity_name.replace(" ",""))
     data1=pd.read_sql_query(sql,db)
     row,col=data1.shape
     if(row!=0):
@@ -958,7 +1107,7 @@ def donate(usaname,v):
         previous_hash=data1.present_hash
         #print(previous_hash)
         present_hash=present.hash
-    table_name=charity_name+"_donation"
+    table_name=charity_name.replace(" ","")+"_donation"
     print(table_name)
     sql=f"""insert into {table_name} (Charityname,Charityemail,Charityaddress,Username,Useremail,status,previous_hash,present_hash,hash)values(%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
     val=(charity_name,charity_email,charity_address,usaname,session['user_email'],status,previous_hash,present_hash,hash)
@@ -994,6 +1143,7 @@ def donate(usaname,v):
     
 
 @app.route('/charityresponse/<string:usaname>',methods=['POST','GET'])
+@login_required
 def charityresponse(usaname):
     '''sql="select useremail from userinformation where Username='%s'"%(usaname)
     data1=pd.read_sql_query(sql,db)
@@ -1005,15 +1155,17 @@ def charityresponse(usaname):
     data=pd.read_sql_query("select *from bankdetails",db)
     return render_template('charityresponse.html',useremail=useremail,cols=data.columns.values,rows=data.values.tolist(),usaname=usaname)'''
 
-    table_name=usaname+"_bankdetails"
+    table_name=usaname.replace(" ","")+"_bankdetails"
     data=pd.read_sql_query(f"select *from {table_name}",db)
     return render_template('charityresponse.html',cols=data.columns.values,rows=data.values.tolist(),usaname=usaname)
 
 @app.route('/ammount/<string:usaname>/<int:v>',methods=['POST','GET'])
+@login_required
 def ammount(usaname,v):
     return render_template('ammount.html',usaname=usaname,v=v)
 
 @app.route('/payment/<string:usaname>/<int:v>',methods=['POST','GET'])
+@login_required
 def payment(usaname,v):
     if request.method=="POST":
         print("ekdfhk")
@@ -1023,6 +1175,7 @@ def payment(usaname,v):
     return render_template('ammount.html',usaname=usaname,v=v)
 
 @app.route('/address/<string:usaname>/<int:v>',methods=['POST','GET'])
+@login_required
 def address(usaname,v):
     #here we extract data based on email address in  and charity information
     '''table_name=usaname+"_bankdetails"
@@ -1039,6 +1192,7 @@ def address(usaname,v):
     return render_template('address.html',usaname=usaname,v=v,info=data.iloc[0])
 
 @app.route('/scann/<string:usaname>/<int:v>',methods=['POST','GET'])
+@login_required
 def scann(usaname,v):
     return render_template('scann.html',usaname=usaname,v=v)
 
@@ -1047,6 +1201,7 @@ def paymentpage(v):
     return render_template('paymentpage.html',v=v,ammount=ammount)'''
 
 @app.route("/makedonate/<string:usaname>/<int:v>/<int:amount>",methods=["POST","GET"])
+@login_required
 def makedonate(usaname,v,amount):
     if request.method=="POST":
         #amount=request.form['amount']
@@ -1055,7 +1210,7 @@ def makedonate(usaname,v,amount):
         expiredate=request.form['expiredate']
         cvv=request.form['cvv']
 
-        table_name=usaname+"_bankdetails"
+        table_name=usaname.replace(" ","")+"_bankdetails"
         sql=f"select Charityemail,CharityaccountNumber,charityifsccode from {table_name} where Id='%s'"%(v)
         data=pd.read_sql_query(sql,db)
         print(data)
@@ -1071,7 +1226,7 @@ def makedonate(usaname,v,amount):
         chaname=rows[0][0]
 
 
-        table_name1=chaname+"_transactiondetails"
+        table_name1=chaname.replace(" ","")+"_transactiondetails"
         transaction_blockchain.add_block_transaction(Charityemail,CharityaccountNumber,charityifsccode,Username,usercardnumber,expiredate,cvv,amount)
         present=transaction_blockchain.transactiochain[len(transaction_blockchain.transactiochain)-1]
         previous_hash="0"
@@ -1093,7 +1248,7 @@ def makedonate(usaname,v,amount):
 
         
 
-        table_name2=usaname+"_transactiondetails"
+        table_name2=usaname.replace(" ","")+"_transactiondetails"
         transaction_blockchain.add_block_transaction(Charityemail,CharityaccountNumber,charityifsccode,Username,usercardnumber,expiredate,cvv,amount)
         present=transaction_blockchain.transactiochain[len(transaction_blockchain.transactiochain)-1]
         previous_hash="0"
@@ -1138,24 +1293,27 @@ def makedonate(usaname,v,amount):
     return render_template("success.html",usaname=usaname,v=v)
 
 @app.route("/itemlist/<string:usaname>")
+@login_required
 def item_list(usaname):
-    table_name2=usaname+"_item"
+    table_name2=usaname.replace(" ","")+"_item"
     #sql="select Charityname,Charityemail,Charityaddress,Useremail from donation where Status='accept'"
     sql=f"select Charityname,Charityemail,Membername,Memberemail,Memberaddress,Membercontact,items,status from {table_name2}"
     data=pd.read_sql_query(sql,db)
     return render_template("itemlist.html",cols=data.columns.values,rows=data.values.tolist(),usaname=usaname)
 
 @app.route("/item_complete/<string:usaname>")
+@login_required
 def item_complete(usaname):
-    table_name2=usaname+"_item"
+    table_name2=usaname.replace(" ","")+"_item"
     #sql="select Charityname,Charityemail,Charityaddress,Useremail from donation where Status='accept'"
     sql=f"select Charityname,Charityemail,Membername,Memberemail,Memberaddress,Membercontact,items,status from {table_name2} where status='accept'"
     data=pd.read_sql_query(sql,db)
     return render_template("donation_item_complete.html",cols=data.columns.values,rows=data.values.tolist(),usaname=usaname)
 
 @app.route("/item_pending/<string:usaname>")
+@login_required
 def item_pending(usaname):
-    table_name2=usaname+"_item"
+    table_name2=usaname.replace(" ","")+"_item"
     #sql="select Charityname,Charityemail,Charityaddress,Useremail from donation where Status='accept'"
     sql=f"select Charityname,Charityemail,Membername,Memberemail,Memberaddress,Membercontact,items,status from {table_name2} where status='pending'"
     data=pd.read_sql_query(sql,db)
@@ -1163,8 +1321,9 @@ def item_pending(usaname):
 
 
 @app.route("/user_transactiondetails/<string:usaname>")
+@login_required
 def user_transactiondetails(usaname):
-    table_name2=usaname+"_transactiondetails"
+    table_name2=usaname.replace(" ","")+"_transactiondetails"
     #sql="select Charityname,Charityemail,Charityaddress,Useremail from donation where Status='accept'"
     sql=f"select Id,Charityemail,Charityaccountnumber,Userename,amount,status,previous_hash,present_hash from {table_name2}"
     data=pd.read_sql_query(sql,db)
@@ -1172,7 +1331,9 @@ def user_transactiondetails(usaname):
 
 
 @app.route("/userlogout")
+@login_required
 def userlogout():
+    logout_user()
     return redirect("/")
 
 
