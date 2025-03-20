@@ -1289,8 +1289,9 @@ def makedonate(usaname,v,amount):
         '''sql="update donation set Status='accept' where Slno='%s' and status='pending'"
         cur.execute(sql)
         db.commit()'''
+        return render_template("success.html",usaname=usaname,v=v)
 
-    return render_template("success.html",usaname=usaname,v=v)
+    return render_template('paymentpage.html',usaname=usaname,v=v,amount=amount)
 
 @app.route("/itemlist/<string:usaname>")
 @login_required
