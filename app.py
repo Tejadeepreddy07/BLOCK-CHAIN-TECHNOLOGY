@@ -670,6 +670,12 @@ def charitylogout():
     logout_user()
     return redirect("/")
 
+
+
+
+
+
+
 #-----------------------------------admin function-----------------------------------------
 
 @app.route('/admin',methods=["POST","GET"])
@@ -787,10 +793,9 @@ def adminlogout():
 
 
 
+
+
 #----------------------------------user function-----------------------------------------------
-
-
-
 
 @app.route("/userreg",methods=["POST","GET"])
 def userreg():
@@ -1209,7 +1214,7 @@ def makedonate(usaname,v,amount):
         usercardnumber=request.form['usercardnumber']
         expiredate=request.form['expiredate']
         cvv=request.form['cvv']
-
+        print(cvv)
         table_name=usaname.replace(" ","")+"_bankdetails"
         sql=f"select Charityemail,CharityaccountNumber,charityifsccode from {table_name} where Id='%s'"%(v)
         data=pd.read_sql_query(sql,db)
@@ -1289,9 +1294,8 @@ def makedonate(usaname,v,amount):
         '''sql="update donation set Status='accept' where Slno='%s' and status='pending'"
         cur.execute(sql)
         db.commit()'''
-        return render_template("success.html",usaname=usaname,v=v)
-
-    return render_template('paymentpage.html',usaname=usaname,v=v,amount=amount)
+    return render_template("success.html",usaname=usaname,v=v)
+    #return redirect(url_for('paymentpage.html',usaname=usaname,v=v,amount=amount))
 
 @app.route("/itemlist/<string:usaname>")
 @login_required
